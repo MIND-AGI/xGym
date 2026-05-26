@@ -105,6 +105,11 @@ def _get_max_rollout_attempts() -> int:
         return _DEFAULT_MAX_ROLLOUT_ATTEMPTS
 
 
+def _is_rollout_tqdm_disabled() -> bool:
+    raw = os.environ.get("NEMO_GYM_DISABLE_ROLLOUT_TQDM", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _failures_path_for(output_fpath: Path) -> Path:
     """Sidecar path used by the dispatcher and ``_load_from_cache``."""
     return output_fpath.with_name(output_fpath.stem + "_failures.jsonl")
@@ -601,6 +606,7 @@ Aggregate metrics: {aggregate_metrics_fpath}""")
             miniters=10,
             total=len(examples),
             maxinterval=60,
+            disable=_is_rollout_tqdm_disabled(),
         )
 
     def setup_server_client(
