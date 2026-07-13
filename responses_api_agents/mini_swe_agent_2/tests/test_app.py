@@ -54,7 +54,10 @@ from responses_api_agents.mini_swe_agent_2.app import (
     MiniSWEAgentVerifyResponse,
     _is_resolved,
     _json_dict_from_metadata,
+    _load_image_map,
     _message_content_to_text,
+    _opencode_config_payload,
+    _opencode_run_command,
     _responses_create_params_to_model_kwargs,
     _run_mini_swe_v2,
     _sandbox_provider_for_config_dump,
@@ -129,6 +132,20 @@ DEFAULT_CHAT_COMPLETION = {
 }
 
 
+class AwaitableResult:
+    def __init__(self, result: Any = None, exc: BaseException | None = None) -> None:
+        self.result = result
+        self.exc = exc
+
+    def __await__(self):
+        async def _wait():
+            if self.exc is not None:
+                raise self.exc
+            return self.result
+
+        return _wait().__await__()
+
+
 def create_test_config(
     host: str = "0.0.0.0",
     port: int = 8080,
@@ -168,7 +185,6 @@ def setup_config_path_mock(mock_get_config_path, config_yaml: str = DEFAULT_CONF
 
 
 def setup_run_mini_swe_mock(
-    mock_to_thread,
     mock_runner_ray_remote,
     run_mini_swe_result: Dict[str, Any] = None,
 ):
@@ -176,13 +192,9 @@ def setup_run_mini_swe_mock(
     if run_mini_swe_result is None:
         run_mini_swe_result = DEFAULT_RUN_MINI_SWE_RESULT
 
-    # Mock the Ray remote function to return a future-like object
-    mock_future = MagicMock()
+    mock_future = AwaitableResult(run_mini_swe_result)
     mock_runner_ray_remote.remote.return_value = mock_future
     mock_runner_ray_remote.options.return_value.remote.return_value = mock_future
-
-    # Mock asyncio.to_thread (which calls ray.get) to return the result
-    mock_to_thread.return_value = run_mini_swe_result
 
 
 def create_run_request(
@@ -248,15 +260,12 @@ def assert_run_response(
 
 
 def assert_run_mini_swe_called(
-    mock_to_thread,
+    mock_runner_ray_remote,
     subset: str = "gym",
     split: str = "train",
     instance_id: str = "test_instance_123",
 ):
-    mock_to_thread.assert_called_once()
-    call_args = mock_to_thread.call_args
-    args = call_args[0]
-    assert len(args) >= 1
+    assert mock_runner_ray_remote.remote.called or mock_runner_ray_remote.options.return_value.remote.called
 
 
 class TestApp:
@@ -328,6 +337,44 @@ class TestApp:
 
         with pytest.raises(ValueError, match="extra_body"):
             _json_dict_from_metadata("[]", field_name="extra_body")
+
+    def test_opencode_config_and_run_command_match_stargaze_defaults(self) -> None:
+        params = {
+            "policy_model_name": "qwen3.5-35b-a3b",
+            "base_url": "http://model/v1",
+            "opencode_provider_id": "litellm",
+            "opencode_provider_api_url": "http://maas.byteintl.net/gateway",
+            "opencode_api_key_env": "LITELLM_KEY",
+        }
+
+        payload = _opencode_config_payload(params)
+        assert payload["model"] == "litellm/qwen3.5-35b-a3b"
+        provider = payload["provider"]["litellm"]
+        assert provider["npm"] == "@ai-sdk/openai-compatible"
+        assert provider["options"] == {
+            "baseURL": "http://maas.byteintl.net/gateway",
+            "apiKey": "{env:LITELLM_KEY}",
+        }
+
+        inline_command = _opencode_run_command(
+            params=params,
+            provider_id="litellm",
+            model_name="qwen3.5-35b-a3b",
+            prompt="fix it",
+            prompt_path="/tmp/prompt.txt",
+        )
+        assert "--file" not in inline_command
+        assert inline_command.endswith(" 'fix it'")
+
+        file_command = _opencode_run_command(
+            params=params | {"opencode_prompt_mode": "file"},
+            provider_id="litellm",
+            model_name="qwen3.5-35b-a3b",
+            prompt="fix it",
+            prompt_path="/tmp/prompt.txt",
+        )
+        assert "--file /tmp/prompt.txt" in file_command
+        assert "Read the attached SWE-bench task prompt" in file_command
 
     def test_sandbox_resource_profiles_override_static_resources(self) -> None:
         spec = _sandbox_spec_for_instance(
@@ -409,6 +456,24 @@ class TestApp:
             "docker.io/xingyaoww/sweb.eval.x86_64.django_s_django-1:latest"
         )
         assert _swebench_image_name({"instance_id": "x", "image_name": "custom:image"}, "verified") == "custom:image"
+        assert _swebench_image_name({"instance_id": "x", "sandbox_image": "internal:image"}, "verified") == (
+            "internal:image"
+        )
+        assert _swebench_image_name(
+            {"instance_id": "x", "image_name": "fallback:image"},
+            "verified",
+            image_map={"x": "mapped:image"},
+        ) == "mapped:image"
+        with pytest.raises(ValueError, match="missing sandbox image"):
+            _swebench_image_name({"instance_id": "missing"}, "verified", image_map={}, require_image_map=True)
+
+        image_map_path = tmp_path / "images.json"
+        image_map_path.write_text(json.dumps({"images": {"task": "cluster:image"}}), encoding="utf-8")
+        assert _load_image_map(image_map_path) == {"task": "cluster:image"}
+        direct_image_map_path = tmp_path / "direct-images.json"
+        direct_image_map_path.write_text(json.dumps({"task": "direct:image"}), encoding="utf-8")
+        assert _load_image_map(direct_image_map_path) == {"task": "direct:image"}
+
         assert _message_content_to_text("hello") == "hello"
         assert _message_content_to_text(None) == ""
         assert _message_content_to_text([{"text": "one"}, {"content": "two"}, 3]) == "one\ntwo\n3"
@@ -718,7 +783,7 @@ class TestApp:
 
         setup_server_client_mocks(mock_load_from_global_config, mock_get_first_server_config_dict)
         setup_config_path_mock(mock_get_config_path)
-        setup_run_mini_swe_mock(mock_to_thread, mock_runner_ray_remote)
+        setup_run_mini_swe_mock(mock_runner_ray_remote)
 
         run_request = create_run_request()
 
@@ -726,7 +791,7 @@ class TestApp:
 
         assert_run_response(response)
 
-        assert_run_mini_swe_called(mock_to_thread)
+        assert_run_mini_swe_called(mock_runner_ray_remote)
 
     @patch("responses_api_agents.mini_swe_agent_2.app.ServerClient.load_from_global_config")
     @patch("responses_api_agents.mini_swe_agent_2.app.get_first_server_config_dict")
@@ -759,7 +824,7 @@ class TestApp:
 
         setup_server_client_mocks(mock_load_from_global_config, mock_get_first_server_config_dict)
         setup_config_path_mock(mock_get_config_path)
-        setup_run_mini_swe_mock(mock_to_thread, mock_runner_ray_remote)
+        setup_run_mini_swe_mock(mock_runner_ray_remote)
 
         run_request = create_run_request(
             temperature=0.6,
@@ -798,6 +863,39 @@ class TestApp:
     @patch("responses_api_agents.mini_swe_agent_2.app.get_config_path")
     @patch("responses_api_agents.mini_swe_agent_2.app.runner_ray_remote")
     @patch("asyncio.to_thread")
+    async def test_run_passes_generic_image_map_to_runner(
+        self,
+        mock_to_thread,
+        mock_runner_ray_remote,
+        mock_get_config_path,
+        mock_get_first_server_config_dict,
+        mock_load_from_global_config,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        image_map_path = tmp_path / "images.json"
+        image_map_path.write_text(json.dumps({"images": {"test_instance_123": "internal:image"}}), encoding="utf-8")
+        config = create_test_config()
+        config.image_map_path = str(image_map_path)
+        config.require_image_map = True
+        server = MiniSWEAgent(config=config, server_client=MagicMock(spec=ServerClient))
+
+        setup_server_client_mocks(mock_load_from_global_config, mock_get_first_server_config_dict)
+        setup_config_path_mock(mock_get_config_path)
+        setup_run_mini_swe_mock(mock_runner_ray_remote)
+
+        await server.run(create_run_request())
+
+        params = mock_runner_ray_remote.remote.call_args.args[1]
+        assert params["image_map_path"] == str(image_map_path)
+        assert params["require_image_map"] is True
+
+    @patch("responses_api_agents.mini_swe_agent_2.app.ServerClient.load_from_global_config")
+    @patch("responses_api_agents.mini_swe_agent_2.app.get_first_server_config_dict")
+    @patch("responses_api_agents.mini_swe_agent_2.app.get_config_path")
+    @patch("responses_api_agents.mini_swe_agent_2.app.runner_ray_remote")
+    @patch("asyncio.to_thread")
     async def test_run_resolves_named_sandbox_provider_reference(
         self,
         mock_to_thread,
@@ -830,7 +928,7 @@ class TestApp:
         mock_load_from_global_config.return_value = mock_server_client_instance
         mock_get_first_server_config_dict.return_value = {"host": "0.0.0.0", "port": 8080}
         setup_config_path_mock(mock_get_config_path)
-        setup_run_mini_swe_mock(mock_to_thread, mock_runner_ray_remote)
+        setup_run_mini_swe_mock(mock_runner_ray_remote)
 
         await server.run(create_run_request())
 
@@ -867,12 +965,7 @@ class TestApp:
         setup_server_client_mocks(mock_load_from_global_config, mock_get_first_server_config_dict)
         setup_config_path_mock(mock_get_config_path)
 
-        # Mock Ray remote function
-        mock_future = MagicMock()
-        mock_runner_ray_remote.remote.return_value = mock_future
-
-        # Mock asyncio.to_thread (ray.get) to raise an exception
-        mock_to_thread.side_effect = Exception("run_mini_swe failed")
+        mock_runner_ray_remote.remote.return_value = AwaitableResult(exc=Exception("run_mini_swe failed"))
 
         run_request = create_run_request(instance_id="test_instance_456", temperature=0.3, top_p=0.95)
 
@@ -886,7 +979,7 @@ class TestApp:
             expected_input_length=0,
         )
 
-        assert_run_mini_swe_called(mock_to_thread, instance_id="test_instance_456")
+        assert_run_mini_swe_called(mock_runner_ray_remote, instance_id="test_instance_456")
 
     @patch("responses_api_agents.mini_swe_agent_2.app.ServerClient.load_from_global_config")
     @patch("responses_api_agents.mini_swe_agent_2.app.get_first_server_config_dict")
@@ -908,12 +1001,7 @@ class TestApp:
         setup_server_client_mocks(mock_load_from_global_config, mock_get_first_server_config_dict)
         setup_config_path_mock(mock_get_config_path)
 
-        # Mock Ray remote function
-        mock_future = MagicMock()
-        mock_runner_ray_remote.remote.return_value = mock_future
-
-        # Mock asyncio.to_thread (ray.get) to raise FileNotFoundError
-        mock_to_thread.side_effect = FileNotFoundError("run_mini_swe not found")
+        mock_runner_ray_remote.remote.return_value = AwaitableResult(exc=FileNotFoundError("run_mini_swe not found"))
 
         run_request = create_run_request(instance_id="test_instance_789", temperature=0.2, top_p=1.0)
 
@@ -927,7 +1015,7 @@ class TestApp:
             expected_input_length=0,
         )
 
-        assert_run_mini_swe_called(mock_to_thread, instance_id="test_instance_789")
+        assert_run_mini_swe_called(mock_runner_ray_remote, instance_id="test_instance_789")
 
     async def test_responses_not_implemented(self) -> None:
         config = create_test_config()

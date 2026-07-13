@@ -38,6 +38,7 @@ from nemo_gym.sandbox.providers.base import (
     SandboxResources,
     SandboxSpec,
     SandboxStatus,
+    coerce_config,
 )
 
 
@@ -71,17 +72,6 @@ def _require_apptainer() -> str:
             "Install Apptainer before using env.sandbox.provider.name=apptainer."
         )
     return path
-
-
-def _coerce_config(value: Any, config_cls: type[Any]) -> Any:
-    """Accept either a config dataclass instance or a plain mapping (Hydra YAML)."""
-    if value is None:
-        return config_cls()
-    if isinstance(value, config_cls):
-        return value
-    if isinstance(value, Mapping):
-        return config_cls(**value)
-    raise TypeError(f"{config_cls.__name__} must be a mapping or {config_cls.__name__} instance")
 
 
 @dataclass(frozen=True)
@@ -248,9 +238,9 @@ class ApptainerProvider:
         create: ApptainerCreateConfig | Mapping[str, Any] | None = None,
         probe: ApptainerProbeConfig | Mapping[str, Any] | None = None,
     ) -> None:
-        self._exec_config = _coerce_config(exec, ApptainerExecConfig)
-        self._create_config = _coerce_config(create, ApptainerCreateConfig)
-        self._probe = _coerce_config(probe, ApptainerProbeConfig)
+        self._exec_config = coerce_config(exec, ApptainerExecConfig)
+        self._create_config = coerce_config(create, ApptainerCreateConfig)
+        self._probe = coerce_config(probe, ApptainerProbeConfig)
         self._binary = _require_apptainer()
         self._semaphore = asyncio.Semaphore(self._exec_config.concurrency)
 

@@ -32,6 +32,7 @@ from nemo_gym.sandbox.providers.base import (
     SandboxResources,
     SandboxSpec,
     SandboxStatus,
+    coerce_config,
 )
 
 
@@ -419,16 +420,6 @@ class OpenSandboxOperationConfig:
             raise ValueError("operations.close_timeout_s must be > 0")
 
 
-def _coerce_config(value: Any, config_cls: type[Any]) -> Any:
-    if value is None:
-        return config_cls()
-    if isinstance(value, config_cls):
-        return value
-    if isinstance(value, Mapping):
-        return config_cls(**value)
-    raise TypeError(f"{config_cls.__name__} must be a mapping or {config_cls.__name__} instance")
-
-
 @dataclass(frozen=True)
 class OpenSandboxProviderOptions:
     """Recognized per-sandbox create options read from ``SandboxSpec.provider_options``.
@@ -496,10 +487,10 @@ class OpenSandboxProvider:
         probe: OpenSandboxProbeConfig | Mapping[str, Any] | None = None,
         operations: OpenSandboxOperationConfig | Mapping[str, Any] | None = None,
     ) -> None:
-        self._connection = _coerce_config(connection, OpenSandboxConnectionConfig)
-        self._create = _coerce_config(create, OpenSandboxCreateConfig)
-        self._probe = _coerce_config(probe, OpenSandboxProbeConfig)
-        self._operations = _coerce_config(operations, OpenSandboxOperationConfig)
+        self._connection = coerce_config(connection, OpenSandboxConnectionConfig)
+        self._create = coerce_config(create, OpenSandboxCreateConfig)
+        self._probe = coerce_config(probe, OpenSandboxProbeConfig)
+        self._operations = coerce_config(operations, OpenSandboxOperationConfig)
 
     def _resolve_extensions(self, extensions: Mapping[str, str]) -> dict[str, str]:
         """Add the configured default image pull policy to SDK create extensions."""

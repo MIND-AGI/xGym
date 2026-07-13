@@ -1,0 +1,71 @@
+swe_agents_terminal:
+  responses_api_agents:
+    swe_agents_terminal:
+      entrypoint: app.py
+      domain: coding
+      description: Software engineering tasks driven by Opencode latest on StarGaze terminal sandbox.
+      value: Evaluate SWE-bench style tasks without apptainer.
+      model_server:
+        type: responses_api_models
+        name: policy_model
+      concurrency: 64
+      env: sandbox
+      sandbox_provider:
+        terminal:
+          connection:
+            config_dir: config
+            vregion: boei18n
+            persist_config: true
+            setup_netrc: true
+            refresh_jwt: true
+          operations:
+            create_request_timeout_s: 300
+            create_retries: 2
+            create_retry_delay_s: 2.0
+            exec_request_extra_timeout_s: 60
+            delete_timeout_s: 60
+            upload_timeout_s: 120
+            download_connect_timeout_s: 10
+            download_read_timeout_s: 120
+            native_file_size_limit: 10485760
+            fallback_chunk_size: 8000
+            concurrency: 64
+          probe:
+            command: null
+      sandbox_spec:
+        ttl_s: 14400
+        ready_timeout_s: 1200
+        resources:
+          cpu: 2
+          memory_mib: 8192
+          disk_gib: 20
+        metadata:
+          benchmark: swebench-verified
+          harness: mini-swe-agent
+          sandbox-api: stargaze-terminal
+          opencode: latest
+      sandbox_environment_kwargs:
+        cwd: /testbed
+        conda_env: testbed
+        activate_conda: true
+        user: root
+      run_golden: false
+      agent_framework: opencode
+      # Set image_map_path in private launch YAML when the cluster uses mirrored SWE-bench images.
+      image_map_path: null
+      require_image_map: false
+      opencode_provider_id: litellm
+      # Override in private launch YAML or Hydra overrides for non-xGym model endpoints.
+      opencode_provider_api_url: null
+      opencode_api_key_env: LITELLM_KEY
+      opencode_api_key: dummy_key
+      opencode_npm_package: opencode-ai@latest
+      opencode_idle_timeout: 1200
+      opencode_command_timeout: 7200
+      opencode_prompt_mode: inline
+      opencode_infra_retries: 1
+      opencode_infra_retry_delay_s: 5.0
+      step_timeout: 7200
+      eval_timeout: 1800
+      skip_if_exists: false
+      step_limit: 250

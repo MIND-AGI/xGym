@@ -35,7 +35,15 @@ from nemo_gym.sandbox.providers import (
 
 T = TypeVar("T")
 SYNC_OPERATION_TIMEOUT_S = 3600.0
+SYNC_OPERATION_GRACE_TIMEOUT_S = 120.0
 SYNC_LOOP_CLOSE_TIMEOUT_S = 5.0
+_DEFAULT_WAIT_TIMEOUT = object()
+
+
+def _operation_wait_timeout(timeout_s: int | float | None) -> float | None:
+    if timeout_s is None:
+        return None
+    return max(SYNC_OPERATION_TIMEOUT_S, float(timeout_s) + SYNC_OPERATION_GRACE_TIMEOUT_S)
 
 
 class AsyncSandbox:
@@ -107,6 +115,31 @@ class AsyncSandbox:
             user=user,
         )
 
+    async def exec_long(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_s: int | float | None = 180,
+        user: str | int | None = None,
+        progress_callback: Callable[[str], None] | None = None,
+        idle_timeout_s: int | float | None = None,
+    ) -> SandboxExecResult:
+        exec_long = getattr(self._provider, "exec_long", None)
+        if callable(exec_long):
+            return await exec_long(
+                self._require_handle(),
+                command,
+                cwd=cwd if cwd is not None else self._spec.workdir if self._spec is not None else None,
+                env=env,
+                timeout_s=timeout_s,
+                user=user,
+                progress_callback=progress_callback,
+                idle_timeout_s=idle_timeout_s,
+            )
+        return await self.exec(command, cwd=cwd, env=env, timeout_s=timeout_s, user=user)
+
     async def upload(self, local_path: Path | str, remote_path: str) -> None:
         await self._provider.upload_file(self._require_handle(), Path(local_path), remote_path)
 
@@ -170,16 +203,24 @@ class _AsyncLoopRunner:
             return
         raise RuntimeError(f"Sandbox.{operation}() is blocking; use AsyncSandbox in async code instead.")
 
-    def _wait_for_result(self, operation: str, future: Future[T]) -> T:
+    def _wait_for_result(self, operation: str, future: Future[T], wait_timeout_s: float | None | object) -> T:
+        effective_wait_timeout = self._wait_timeout_s if wait_timeout_s is _DEFAULT_WAIT_TIMEOUT else wait_timeout_s
         try:
-            return future.result(timeout=self._wait_timeout_s)
+            return future.result(timeout=effective_wait_timeout)
         except FutureTimeoutError as e:
             future.cancel()
+            timeout_text = "unbounded" if effective_wait_timeout is None else f"{effective_wait_timeout:g}s"
             raise TimeoutError(
-                f"Sandbox.{operation}() timed out waiting for the sync loop after {self._wait_timeout_s:g}s"
+                f"Sandbox.{operation}() timed out waiting for the sync loop after {timeout_text}"
             ) from e
 
-    def call(self, operation: str, func: Callable[[], T]) -> T:
+    def call(
+        self,
+        operation: str,
+        func: Callable[[], T],
+        *,
+        wait_timeout_s: float | None | object = _DEFAULT_WAIT_TIMEOUT,
+    ) -> T:
         self._ensure_can_block(operation)
         future: Future[T] = Future()
 
@@ -194,18 +235,18 @@ class _AsyncLoopRunner:
                     future.set_result(result)
 
         self._loop.call_soon_threadsafe(invoke)
-        return self._wait_for_result(operation, future)
+        return self._wait_for_result(operation, future, wait_timeout_s)
 
-    def run(self, operation: str, awaitable_factory: Callable[[], Awaitable[T]]) -> T:
+    def run(
+        self,
+        operation: str,
+        awaitable_factory: Callable[[], Awaitable[T]],
+        *,
+        wait_timeout_s: float | None | object = _DEFAULT_WAIT_TIMEOUT,
+    ) -> T:
         self._ensure_can_block(operation)
         future = asyncio.run_coroutine_threadsafe(awaitable_factory(), self._loop)
-        try:
-            return future.result(timeout=self._wait_timeout_s)
-        except FutureTimeoutError as e:
-            future.cancel()
-            raise TimeoutError(
-                f"Sandbox.{operation}() timed out waiting for the sync loop after {self._wait_timeout_s:g}s"
-            ) from e
+        return self._wait_for_result(operation, future, wait_timeout_s)
 
     def close(self) -> None:
         if self._closed:
@@ -266,6 +307,32 @@ class Sandbox:
                 timeout_s=timeout_s,
                 user=user,
             ),
+            wait_timeout_s=_operation_wait_timeout(timeout_s),
+        )
+
+    def exec_long(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_s: int | float | None = 180,
+        user: str | int | None = None,
+        progress_callback: Callable[[str], None] | None = None,
+        idle_timeout_s: int | float | None = None,
+    ) -> SandboxExecResult:
+        return self._runner.run(
+            "exec_long",
+            lambda: self._async_sandbox.exec_long(
+                command,
+                cwd=cwd,
+                env=env,
+                timeout_s=timeout_s,
+                user=user,
+                progress_callback=progress_callback,
+                idle_timeout_s=idle_timeout_s,
+            ),
+            wait_timeout_s=_operation_wait_timeout(timeout_s),
         )
 
     def upload(self, local_path: Path | str, remote_path: str) -> None:

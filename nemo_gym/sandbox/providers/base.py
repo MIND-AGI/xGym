@@ -121,6 +121,17 @@ class SandboxCreateVerificationError(SandboxCreateError):
     """Raised when a newly-created sandbox fails provider readiness checks."""
 
 
+def coerce_config(value: Any, config_cls: type[Any]) -> Any:
+    """Accept either a config dataclass instance or a plain mapping (Hydra YAML)."""
+    if value is None:
+        return config_cls()
+    if isinstance(value, config_cls):
+        return value
+    if isinstance(value, Mapping):
+        return config_cls(**value)
+    raise TypeError(f"{config_cls.__name__} must be a mapping or {config_cls.__name__} instance")
+
+
 class SandboxProvider(Protocol):
     """Runtime/infra provider contract used by the public sandbox API."""
 

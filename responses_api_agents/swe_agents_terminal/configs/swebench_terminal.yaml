@@ -1,0 +1,63 @@
+# SWE-bench Verified preset for clusters that expose a terminal-session sandbox
+# service. This is intentionally a thin wrapper around mini_swe_agent_2:
+# - model calls go through xGym's registered model_server outside the sandbox;
+# - mini-swe-agent's control loop runs in the agent/Ray worker;
+# - only command execution, patch collection, and SWE-bench eval run in /testbed.
+swe_agents_terminal:
+  responses_api_agents:
+    swe_agents_terminal:
+      entrypoint: app.py
+      domain: coding
+      description: Software engineering tasks driven by mini-swe-agent on a terminal sandbox provider.
+      value: Evaluate SWE-bench style tasks on cluster terminal sandboxes while preserving xGym model_server wiring.
+      model_server:
+        type: responses_api_models
+        name: policy_model
+      concurrency: 64
+      env: sandbox
+      # Inline terminal provider config for local/private clusters. Prefer moving
+      # this block into nemo_gym/sandbox/providers/terminal/configs/<cluster>.yaml
+      # and setting sandbox_provider: sandbox once the provider is productionized.
+      sandbox_provider:
+        terminal:
+          service:
+            endpoint: stargaze   # use the built-in StarGaze/AIIC terminal adapter
+            region: boei18n
+            config_dir: config
+          create:
+            request_timeout_s: 300
+            retries: 2
+            retry_delay_s: 2.0
+          exec:
+            default_timeout_s: 600
+            request_extra_timeout_s: 60
+            concurrency: 32
+          probe:
+            command: null        # set a cluster-safe probe when available
+          metadata:
+            xgym.integration: terminal-provider
+      sandbox_spec:
+        ttl_s: 18000
+        ready_timeout_s: 1200
+        resources:
+          cpu: 2
+          memory_mib: 8192
+          disk_gib: 20
+        metadata:
+          benchmark: swebench-verified
+          harness: mini-swe-agent
+      sandbox_environment_kwargs:
+        cwd: /testbed
+        conda_env: testbed
+        activate_conda: true
+        user: root
+      # Optional generic image map for clusters that mirror SWE-bench images to
+      # internal ids. JSON may be either {"images": {instance_id: image}} or a
+      # direct {instance_id: image} object.
+      image_map_path: null
+      require_image_map: false
+      run_golden: false
+      step_timeout: 600
+      eval_timeout: 1800
+      skip_if_exists: false
+      step_limit: 250

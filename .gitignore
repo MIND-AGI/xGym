@@ -234,6 +234,12 @@ outputs
 
 # Environment with sensitive information like API keys
 env.yaml
+config/terminal_sandbox_config.json
+
+# SWE-bench rollout inputs/results generated during local eval runs
+responses_api_agents/swe_agents_terminal/data_*.jsonl
+responses_api_agents/swe_agents_terminal/data_*.jsonl.metadata.json
+responses_api_agents/swe_agents_terminal/results/
 
 # Backup files
 *.backup
